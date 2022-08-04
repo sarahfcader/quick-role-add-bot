@@ -1,16 +1,23 @@
 import net.dv8tion.jda.api.*;
-import net.dv8tion.jda.api.entities.Channel;
-import net.dv8tion.jda.api.entities.GuildChannel;
-import net.dv8tion.jda.api.entities.Message;
-import net.dv8tion.jda.api.entities.Role;
+import net.dv8tion.jda.api.entities.*;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
+import net.dv8tion.jda.api.exceptions.ErrorHandler;
 import net.dv8tion.jda.api.hooks.*;
 import net.dv8tion.jda.api.interactions.InteractionHook;
 import net.dv8tion.jda.api.interactions.commands.build.Commands;
 import net.dv8tion.jda.api.interactions.commands.build.OptionData;
+import net.dv8tion.jda.api.requests.ErrorResponse;
+import net.dv8tion.jda.api.requests.GatewayIntent;
 import net.dv8tion.jda.api.requests.restaction.CommandListUpdateAction;
 
+import io.github.cdimascio.dotenv.Dotenv;
+import net.dv8tion.jda.api.requests.restaction.pagination.MessagePaginationAction;
+import net.dv8tion.jda.api.utils.ChunkingFilter;
+import net.dv8tion.jda.api.utils.MemberCachePolicy;
+
 import javax.security.auth.login.LoginException;
+
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static net.dv8tion.jda.api.interactions.commands.OptionType.*;
 //////
@@ -20,11 +27,14 @@ public class QuickRoleAddBot extends ListenerAdapter {
 
     public static void main(String[] args) {
 
-        // Build MongoClient
         try {
             // Build JDA
-            JDA bot = JDABuilder.createLight("TOKEN")
+            Dotenv dotenv = Dotenv.configure().load();
+            JDA bot = JDABuilder.createLight(dotenv.get("BOT_TOKEN"))
                     .addEventListeners(new QuickRoleAddBot())
+                    .setChunkingFilter(ChunkingFilter.ALL) // enable member chunking for all guilds
+                    .setMemberCachePolicy(MemberCachePolicy.ALL) // ignored if chunking enabled
+                    .enableIntents(GatewayIntent.GUILD_MEMBERS)
                     .build();
 
             // These commands take up to an hour to be activated after creation/update/delete
@@ -32,12 +42,14 @@ public class QuickRoleAddBot extends ListenerAdapter {
 
             // Moderation commands with required options
             commands.addCommands(
-                    Commands.slash("massAssign", "Assign roles to users matching your specified requirements:")
+                    Commands.slash("mass-assign", "Assign roles to users matching your specified requirements:")
                             .addOptions(new OptionData(ROLE, "role", "The role to be assigned.")
                                     .setRequired(true))
                             .addOptions(new OptionData(CHANNEL, "channel", "Channel that the user must have participated in.").setRequired(true))
-                            .addOptions(new OptionData(STRING, "messageContains", "Any string the message must have contained.").setRequired(false))
-                            .addOptions(new OptionData(INTEGER, "messageLength", "Min. length of the message.").setRequired(false))
+                            .addOptions(new OptionData(INTEGER, "num-messages", "The number of messages to check against requirements (starting from the most recent).").setRequired(true))
+                            .addOptions(new OptionData(INTEGER, "min-message-length", "The min. # of characters in a message to get role.").setRequired(false))
+                            //.addOptions(new OptionData(STRING, "message-contains", "Any strings the message must have contained, separate with spaces.").setRequired(false))
+
 
             );
 
@@ -45,6 +57,7 @@ public class QuickRoleAddBot extends ListenerAdapter {
             commands.queue();
         } catch (LoginException e) {
             System.out.println("Bot login failed.");
+            e.printStackTrace();
         }
     }
 
@@ -55,8 +68,9 @@ public class QuickRoleAddBot extends ListenerAdapter {
         if (event.getGuild() == null)
             return;
         switch (event.getName()) {
-            case "massAssign":
+            case "mass-assign":
                 massAssign(event);
+                break;
             default:
                 event.reply("I can't handle that command right now.").setEphemeral(true).queue();
         }
@@ -69,12 +83,28 @@ public class QuickRoleAddBot extends ListenerAdapter {
 
         // SUBMISSION INFO
         Role role = event.getOption("role").getAsRole();
-        GuildChannel channel = event.getOption("channel").getAsGuildChannel();
-        String requiredMessageContainsStrings = event.getOption("messageContains").getAsString();
+        TextChannel channel = event.getOption("channel").getAsTextChannel();
+        int limit = event.getOption("num-messages").getAsInt();
+        int minLength = event.getOption("min-message-length") != null ? event.getOption("min-message-length").getAsInt() : 1;
 
-        //42 for addresses
-        int requiredMessageLength = event.getOption("messageLength").getAsInt();
+        //String requiredMessageContainsStrings = event.getOption("message-contains") != null ? event.getOption("message-contains").getAsString();
 
+        Guild guild = event.getGuild();
 
+        AtomicInteger rolesAssigned = new AtomicInteger();
+        MessagePaginationAction action = channel.getIterableHistory();
+        action.stream()
+                .limit(limit)
+                .filter(m -> !m.getAuthor().isBot())
+                .filter(m -> m.getContentStripped().length() >= minLength)
+                .map(m -> m.getAuthor())
+                .distinct()
+                .filter(user -> guild.getMember(user) != null)
+                .filter(user -> !guild.getMember(user).getRoles().contains(role))
+                .forEach(u -> guild.addRoleToMember(u.getId(), role).queue(m -> rolesAssigned.getAndIncrement(), new ErrorHandler()
+                                .handle(ErrorResponse.UNKNOWN_MEMBER, (error) -> System.out.println(error.getErrorResponse()))));
+
+        hook.sendMessage(rolesAssigned.get() + " roles assigned.").queue();
     }
+
 }
