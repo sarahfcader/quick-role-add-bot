@@ -2,6 +2,7 @@ import net.dv8tion.jda.api.*;
 import net.dv8tion.jda.api.entities.*;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
 import net.dv8tion.jda.api.exceptions.ErrorHandler;
+import net.dv8tion.jda.api.exceptions.ErrorResponseException;
 import net.dv8tion.jda.api.hooks.*;
 import net.dv8tion.jda.api.interactions.InteractionHook;
 import net.dv8tion.jda.api.interactions.commands.build.Commands;
@@ -47,8 +48,9 @@ public class QuickRoleAddBot extends ListenerAdapter {
                                     .setRequired(true))
                             .addOptions(new OptionData(CHANNEL, "channel", "Channel that the user must have participated in.").setRequired(true))
                             .addOptions(new OptionData(INTEGER, "num-messages", "The number of messages to check against requirements (starting from the most recent).").setRequired(true))
+                            .addOptions(new OptionData(INTEGER, "max-roles-to-assign", "The desired maximum number of roles to give out.").setRequired(true))
                             .addOptions(new OptionData(INTEGER, "min-message-length", "The min. # of characters in a message to get role.").setRequired(false))
-                            //.addOptions(new OptionData(STRING, "message-contains", "Any strings the message must have contained, separate with spaces.").setRequired(false))
+                    //.addOptions(new OptionData(STRING, "message-contains", "Any strings the message must have contained, separate with spaces.").setRequired(false))
 
 
             );
@@ -85,6 +87,7 @@ public class QuickRoleAddBot extends ListenerAdapter {
         Role role = event.getOption("role").getAsRole();
         TextChannel channel = event.getOption("channel").getAsTextChannel();
         int limit = event.getOption("num-messages").getAsInt();
+        int maxAssigns = event.getOption("max-roles-to-assign").getAsInt();
         int minLength = event.getOption("min-message-length") != null ? event.getOption("min-message-length").getAsInt() : 1;
 
         //String requiredMessageContainsStrings = event.getOption("message-contains") != null ? event.getOption("message-contains").getAsString();
@@ -92,19 +95,31 @@ public class QuickRoleAddBot extends ListenerAdapter {
         Guild guild = event.getGuild();
 
         AtomicInteger rolesAssigned = new AtomicInteger();
+
         MessagePaginationAction action = channel.getIterableHistory();
         action.stream()
                 .limit(limit)
                 .filter(m -> !m.getAuthor().isBot())
-                .filter(m -> m.getContentStripped().length() >= minLength)
                 .map(m -> m.getAuthor())
                 .distinct()
                 .filter(user -> guild.getMember(user) != null)
                 .filter(user -> !guild.getMember(user).getRoles().contains(role))
-                .forEach(u -> guild.addRoleToMember(u.getId(), role).queue(m -> rolesAssigned.getAndIncrement(), new ErrorHandler()
-                                .handle(ErrorResponse.UNKNOWN_MEMBER, (error) -> System.out.println(error.getErrorResponse()))));
+                .forEach(u -> assignRoleToMember(guild, role, u.getId(), rolesAssigned, maxAssigns));
 
         hook.sendMessage(rolesAssigned.get() + " roles assigned.").queue();
+    }
+
+    void assignRoleToMember(Guild guild, Role role, String id, AtomicInteger assigned, int maxAssigns) {
+        if (assigned.get() > maxAssigns) {
+            return;
+        } else {
+            try {
+                guild.addRoleToMember(id, role).complete();
+                assigned.getAndIncrement();
+            } catch(ErrorResponseException e) {
+                e.printStackTrace();
+            }
+        }
     }
 
 }
